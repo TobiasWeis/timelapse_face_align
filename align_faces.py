@@ -12,6 +12,8 @@ from nolearn.lasagne import NeuralNet
 import glob
 
 from settings import *
+from utils import *
+
 
 cascPath = "./haarcascade_frontalface_alt.xml"
 faceCascade = cv2.CascadeClassifier(cascPath)
@@ -38,10 +40,12 @@ def detect_faces(img):
 
     ret_faces = []
     for (x, y, w, h) in faces:
-        print "FACE"
-        # first, save patches to file
-        patch = img[y:y+h, x:x+w,:]
-        ret_faces.append(patch)
+        cx = (x+w)/2
+        cy = (y+h)/2
+        #ensure that face is kind of in the center
+        if cx < 3*img.shape[1]/4. and cx > img.shape[1]/4.:
+            patch = img[y:y+h, x:x+w,:]
+            ret_faces.append(patch)
 
     return ret_faces
 
@@ -84,12 +88,10 @@ def warp_im(im, M, dshape):
 def get_landmarks(im):
     rects = detector(im, 1)
     
-    '''
     if len(rects) > 1:
-        raise TooManyFaces
+        raise Exception("Too many faces") 
     if len(rects) == 0:
-        raise NoFaces
-    '''
+        raise Exception("No face")
 
     return np.matrix([[p.x, p.y] for p in predictor(im, rects[0]).parts()])
 
@@ -102,47 +104,78 @@ def preprocess(folder):
 
     myfiles = {}
     for f in files:
-        print f
         # detect faces, get patches
         patches = detect_faces(cv2.imread(f))
-        print "Got %d patches" % len(patches)
         for p in patches:
             label = classify_face(p)
-            try:
-                myfiles[label].append(f)
-            except:
-                myfiles[label] = []
-                myfiles[label].append(f)
+            if not label in myfiles: 
+                myfiles[label] = {}
+            day = get_day(f)
+            if not day in myfiles[label]:
+                myfiles[label][day] = []
+
+            myfiles[label][day].append(f)
+
+    # now list them and show
+    for label, daylist in myfiles.iteritems():
+        days = daylist.keys()
+        days.sort()
+        for day in days:
+            files = daylist[day]
+            print "Got %d images for %s on day %s" % (len(files), s.labels[label], day)
     return myfiles
 
+def get_day(fname):
+    #complete_20160910-170959246_xc683_yc354_w116_h116.png
+    return fname.split('_')[1].split('-')[0]
 
 labeled_files = preprocess("./")
 
-for k,files in labeled_files.iteritems():
-    out_imgs = []
-    print "Computing alignments for ", s.labels[k]
-    initial = True
-    img1 = cv2.imread(files[0])
-    for i,f in enumerate(files[:-1]):
-        img2 = cv2.imread(files[i+1])
+old_img = None
+old_points = None
 
-        if initial:
-            out_imgs.append(img1)
-            initial = False
+for labelidx, daylist in labeled_files.iteritems():
+    out_imgs = []
+
+    print "Computing alignments for ", s.labels[labelidx]
+    days = daylist.keys()
+    days.sort()
+    for day in days: 
+        files = daylist[day]
+    
+        # select the most frontal face for that day
+        max_score = [-1, ""]
+        for i,f in enumerate(files[:]):
+            try:
+                img = cv2.imread(files[i])
+                points = get_landmarks(img)
+                ffs = frontface_score(points)
+                if ffs > max_score[0]:
+                    max_score = [ffs, f]
+            except Exception, e:
+                print "First block, exception: ", e
+                pass
 
         try:
-            points1 = get_landmarks(img1)
-            points2 = get_landmarks(img2)
+            img = cv2.imread(max_score[1])
+            points = get_landmarks(img)
 
-            transmat = transformation_from_points(points1,points2)
-            out_img = warp_im(img2, transmat, img1.shape)
+            if old_img != None:
+                transmat = transformation_from_points(old_points,points)
+                out_img = warp_im(img, transmat, img.shape)
+
+            old_img = img
+            old_points = points
 
             out_imgs.append(out_img)
-        except:
+        except Exception, e:
+            print "Exception: ", e
+            print "With file: ", f, 
             pass
 
 
     print "Displaying"
-    for img in out_imgs:
-        cv2.imshow("img", img)
-        cv2.waitKey(100)
+    for i in range(10):
+        for img in out_imgs:
+            cv2.imshow("img", img)
+            cv2.waitKey(100)
